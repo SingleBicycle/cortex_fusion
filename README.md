@@ -13,7 +13,7 @@ Graph-branch SSL pipeline for cortical template-aligned surface graphs. The surf
 - `scikit-learn` optional for PCA; the extractor falls back to NumPy SVD
 
 ## Docker
-The server at `ecen-fan-s1.engr.tamu.edu` already has Docker GPU runtime enabled, so this repo can run inside a CUDA-enabled container without changing the dataset layout on disk.
+
 
 1. Build the image:
 ```bash
