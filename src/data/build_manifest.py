@@ -13,12 +13,17 @@ from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 import numpy as np
 import pandas as pd
 
-from src.data.io_fs import read_annot, read_surface, robust_read_morph
+from src.data.io_fs import read_annot, read_label_vertices, read_surface, robust_read_morph
 
 PIAL_RE = re.compile(r"^(?P<hemi>lh|rh)\.pial(?:\.resampled)?\.(?P<res>[A-Za-z0-9_]+)$")
 WHITE_RE = re.compile(r"^(?P<hemi>lh|rh)\.white(?:\.resampled)?\.(?P<res>[A-Za-z0-9_]+)$")
+PIAL_MGH_RE = re.compile(r"^(?P<hemi>lh|rh)\.pial\.(?P<res>fsaverage[0-9]*)\.mgh$")
+WHITE_MGH_RE = re.compile(r"^(?P<hemi>lh|rh)\.white\.(?P<res>fsaverage[0-9]*)\.mgh$")
 ANNOT_RE = re.compile(
     r"^(?P<hemi>lh|rh)\.aparc(?:\.resampled)?\.(?P<res>[A-Za-z0-9_]+)\.annot$"
+)
+CORTEX_LABEL_RE = re.compile(
+    r"^(?P<hemi>lh|rh)\.cortex\.resampled\.(?P<res>fsaverage[0-9]*)\.label$"
 )
 THICK_RE = re.compile(r"^(?P<hemi>lh|rh)\.thickness(?:\.[A-Za-z0-9_]+)*\.(?:mgh|mgz)$")
 CURV_RE = re.compile(r"^(?P<hemi>lh|rh)\.curv(?:\.[A-Za-z0-9_]+)*\.(?:mgh|mgz)$")
@@ -29,6 +34,7 @@ class ScanResult:
     pial: Dict[Tuple[str, str, str], Set[str]]
     white: Dict[Tuple[str, str, str], Set[str]]
     annot: Dict[Tuple[str, str, str], Set[str]]
+    cortex_label: Dict[Tuple[str, str, str], Set[str]]
     thick: Dict[Tuple[str, str], Set[str]]
     curv: Dict[Tuple[str, str], Set[str]]
 
@@ -38,7 +44,7 @@ def _collect_scan_roots(root: str, mode: Optional[str]) -> List[str]:
     if mode is None:
         return [root]
 
-    aliases = [f"SURF_{mode.upper()}", f"FEAT_{mode.upper()}"]
+    aliases = [f"SURF_{mode.upper()}", f"FEAT_{mode.upper()}", f"LABEL_{mode.upper()}"]
     roots: List[str] = []
     for alias in aliases:
         p = os.path.join(root, alias)
@@ -62,6 +68,7 @@ def _scan_files(scan_roots: Sequence[str]) -> ScanResult:
     pial: Dict[Tuple[str, str, str], Set[str]] = defaultdict(set)
     white: Dict[Tuple[str, str, str], Set[str]] = defaultdict(set)
     annot: Dict[Tuple[str, str, str], Set[str]] = defaultdict(set)
+    cortex_label: Dict[Tuple[str, str, str], Set[str]] = defaultdict(set)
     thick: Dict[Tuple[str, str], Set[str]] = defaultdict(set)
     curv: Dict[Tuple[str, str], Set[str]] = defaultdict(set)
 
@@ -80,7 +87,19 @@ def _scan_files(scan_roots: Sequence[str]) -> ScanResult:
                     pial[key].add(fpath)
                     continue
 
+                m = PIAL_MGH_RE.match(fname)
+                if m:
+                    key = (sid, m.group("hemi"), m.group("res"))
+                    pial[key].add(fpath)
+                    continue
+
                 m = WHITE_RE.match(fname)
+                if m:
+                    key = (sid, m.group("hemi"), m.group("res"))
+                    white[key].add(fpath)
+                    continue
+
+                m = WHITE_MGH_RE.match(fname)
                 if m:
                     key = (sid, m.group("hemi"), m.group("res"))
                     white[key].add(fpath)
@@ -90,6 +109,12 @@ def _scan_files(scan_roots: Sequence[str]) -> ScanResult:
                 if m:
                     key = (sid, m.group("hemi"), m.group("res"))
                     annot[key].add(fpath)
+                    continue
+
+                m = CORTEX_LABEL_RE.match(fname)
+                if m:
+                    key = (sid, m.group("hemi"), m.group("res"))
+                    cortex_label[key].add(fpath)
                     continue
 
                 m = THICK_RE.match(fname)
@@ -104,7 +129,14 @@ def _scan_files(scan_roots: Sequence[str]) -> ScanResult:
                     curv[key].add(fpath)
                     continue
 
-    return ScanResult(pial=pial, white=white, annot=annot, thick=thick, curv=curv)
+    return ScanResult(
+        pial=pial,
+        white=white,
+        annot=annot,
+        cortex_label=cortex_label,
+        thick=thick,
+        curv=curv,
+    )
 
 
 def _pick_single_path(paths: Set[str]) -> str:
@@ -121,7 +153,7 @@ def _pick_morph_path(
         vec = morph_cache.get(path, None)
         if path not in morph_cache:
             try:
-                vec = robust_read_morph(path, expected_len=None)
+                vec = robust_read_morph(path, expected_len=expected_len)
             except Exception:  # noqa: BLE001
                 vec = None
             morph_cache[path] = vec
@@ -136,6 +168,24 @@ def _iter_target_sids(scan: ScanResult, res: str) -> List[str]:
     return sids
 
 
+def _scan_template_surfaces(scan_roots: Sequence[str]) -> Dict[Tuple[str, str], str]:
+    out: Dict[Tuple[str, str], str] = {}
+    for base in scan_roots:
+        faces_root = os.path.join(base, "faces")
+        if not os.path.isdir(faces_root):
+            continue
+
+        for res in sorted(os.listdir(faces_root)):
+            surf_dir = os.path.join(faces_root, res, "surf")
+            if not os.path.isdir(surf_dir):
+                continue
+            for hemi in ("lh", "rh"):
+                path = os.path.join(surf_dir, f"{hemi}.pial")
+                if os.path.exists(path):
+                    out[(hemi, res)] = os.path.abspath(path)
+    return out
+
+
 def build_manifest(
     root: str,
     out_csv: str,
@@ -145,6 +195,7 @@ def build_manifest(
 ) -> pd.DataFrame:
     scan_roots = _collect_scan_roots(root=root, mode=mode)
     scan = _scan_files(scan_roots)
+    template_surfaces = _scan_template_surfaces(scan_roots)
 
     target_sids = _iter_target_sids(scan=scan, res=res)
     if max_subjects is not None:
@@ -168,13 +219,13 @@ def build_manifest(
                 continue
 
             annot_paths = scan.annot.get(key, set())
-            if not annot_paths:
-                skipped["missing_annot"] += 1
+            cortex_label_paths = scan.cortex_label.get(key, set())
+            if not annot_paths and not cortex_label_paths:
+                skipped["missing_label"] += 1
                 continue
 
             pial_path = _pick_single_path(pial_paths)
             white_path = _pick_single_path(white_paths)
-            annot_path = _pick_single_path(annot_paths)
 
             try:
                 pial_verts, pial_faces = read_surface(pial_path)
@@ -189,25 +240,66 @@ def build_manifest(
                 continue
 
             n_verts = int(pial_verts.shape[0])
-            n_faces = int(pial_faces.shape[0])
 
             if int(white_verts.shape[0]) != n_verts:
                 skipped["white_n_mismatch"] += 1
                 continue
 
-            if white_faces.shape != pial_faces.shape or not np.array_equal(white_faces, pial_faces):
+            if (
+                pial_faces.size > 0
+                and white_faces.size > 0
+                and (white_faces.shape != pial_faces.shape or not np.array_equal(white_faces, pial_faces))
+            ):
                 skipped["faces_topology_mismatch"] += 1
                 continue
 
-            try:
-                annot_labels, _ctab, _names = read_annot(annot_path)
-            except Exception:  # noqa: BLE001
-                skipped["bad_annot"] += 1
-                continue
+            if pial_faces.size > 0:
+                topology_path = pial_path
+                n_faces = int(pial_faces.shape[0])
+            else:
+                topology_path = template_surfaces.get((hemi, res), None)
+                if topology_path is None:
+                    skipped["missing_topology_template"] += 1
+                    continue
+                try:
+                    topo_verts, topo_faces = read_surface(topology_path)
+                except Exception:  # noqa: BLE001
+                    skipped["bad_topology_template"] += 1
+                    continue
+                if int(topo_verts.shape[0]) != n_verts:
+                    skipped["topology_n_mismatch"] += 1
+                    continue
+                n_faces = int(topo_faces.shape[0])
 
-            if int(np.asarray(annot_labels).shape[0]) != n_verts:
-                skipped["annot_n_mismatch"] += 1
-                continue
+            if annot_paths:
+                annot_path = _pick_single_path(annot_paths)
+                label_path = annot_path
+                label_format = "annot"
+                try:
+                    annot_labels, _ctab, _names = read_annot(annot_path)
+                except Exception:  # noqa: BLE001
+                    skipped["bad_annot"] += 1
+                    continue
+
+                if int(np.asarray(annot_labels).shape[0]) != n_verts:
+                    skipped["annot_n_mismatch"] += 1
+                    continue
+            else:
+                annot_path = ""
+                label_path = _pick_single_path(cortex_label_paths)
+                label_format = "cortex_label"
+                try:
+                    label_vertices = read_label_vertices(label_path)
+                except Exception:  # noqa: BLE001
+                    skipped["bad_cortex_label"] += 1
+                    continue
+
+                if label_vertices.size == 0:
+                    skipped["empty_cortex_label"] += 1
+                    continue
+                if int(label_vertices.min()) < 0 or int(label_vertices.max()) >= n_verts:
+                    skipped["cortex_label_out_of_bounds"] += 1
+                    continue
 
             thick_candidates = list(scan.thick.get((sid, hemi), set()))
             curv_candidates = list(scan.curv.get((sid, hemi), set()))
@@ -238,6 +330,9 @@ def build_manifest(
                     "pial_path": pial_path,
                     "white_path": white_path,
                     "annot_path": annot_path,
+                    "label_path": label_path,
+                    "label_format": label_format,
+                    "topology_path": topology_path,
                     "thickness_path": thickness_path,
                     "curv_path": curv_path,
                     "N": n_verts,

@@ -1,3 +1,8 @@
+runs
+handoff_to_tian
+cache
+z_graph_cache_newest_fsaverage6_train
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

@@ -1,0 +1,10 @@
+torch_geometric==2.7.0
+nibabel>=5.3,<6
+numpy>=2.2,<3
+pandas>=2.2,<3
+tqdm>=4.67,<5
+matplotlib>=3.10,<4
+scikit-learn>=1.6,<2
+scikit-image>=0.25,<1
+imageio>=2.37,<3
+tensorboard>=2.19,<3

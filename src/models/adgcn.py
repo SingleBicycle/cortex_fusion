@@ -100,68 +100,97 @@ class ADGCNEncoder(nn.Module):
 
 
 class GraphBranchModel(nn.Module):
-    """Graph branch with split input encoders + ADGCN backbone + task heads."""
+    """Graph branch with schema-aware split encoders + ADGCN backbone."""
 
     def __init__(
         self,
-        hidden_dim: int = 16,
-        dims: Sequence[int] = (16, 32, 64, 128, 64, 32, 16),
+        input_mode: str,
+        in_dim: int,
+        geo_dim: int,
+        morph_dim: int,
+        hidden_dim: int = 32,
+        dims: Sequence[int] = (32, 64, 128, 256, 128, 64, 32),
         num_classes: int = 0,
         dropout: float = 0.1,
         fuse_mode: str = "sum",
     ) -> None:
         super().__init__()
+        if in_dim <= 0:
+            raise ValueError(f"in_dim must be positive, got {in_dim}")
+        if geo_dim < 0 or morph_dim < 0 or (geo_dim + morph_dim) != in_dim:
+            raise ValueError(
+                f"Expected geo_dim + morph_dim == in_dim, got geo_dim={geo_dim}, "
+                f"morph_dim={morph_dim}, in_dim={in_dim}"
+            )
         if fuse_mode not in {"sum", "concat"}:
             raise ValueError(f"Unsupported fuse_mode: {fuse_mode}")
+        if dims[0] != hidden_dim:
+            raise ValueError(f"dims[0]={dims[0]} must equal hidden_dim={hidden_dim}")
 
-        self.hidden_dim = hidden_dim
+        self.input_mode = str(input_mode)
+        self.in_dim = int(in_dim)
+        self.geo_dim = int(geo_dim)
+        self.morph_dim = int(morph_dim)
+        self.hidden_dim = int(hidden_dim)
         self.num_classes = int(num_classes)
         self.fuse_mode = fuse_mode
 
-        self.pos_encoder = nn.Sequential(
-            nn.Linear(6, hidden_dim),
-            nn.ReLU(inplace=True),
-            nn.Linear(hidden_dim, hidden_dim),
-        )
-        self.morph_encoder = nn.Sequential(
-            nn.Linear(2, hidden_dim),
-            nn.ReLU(inplace=True),
-            nn.Linear(hidden_dim, hidden_dim),
-        )
-        self.fuse_linear = nn.Linear(hidden_dim * 2, hidden_dim) if fuse_mode == "concat" else None
+        self.geo_encoder = self._build_encoder(self.geo_dim) if self.geo_dim > 0 else None
+        self.morph_encoder = self._build_encoder(self.morph_dim) if self.morph_dim > 0 else None
+        self.fuse_linear = None
+        if self.geo_encoder is not None and self.morph_encoder is not None and self.fuse_mode == "concat":
+            self.fuse_linear = nn.Linear(self.hidden_dim * 2, self.hidden_dim)
 
-        self.encoder = ADGCNEncoder(in_channels=hidden_dim, dims=dims, dropout=dropout)
+        self.encoder = ADGCNEncoder(in_channels=self.hidden_dim, dims=dims, dropout=dropout)
 
-        self.morph_head = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim),
+        self.recon_head = nn.Sequential(
+            nn.Linear(self.hidden_dim, self.hidden_dim),
             nn.ReLU(inplace=True),
-            nn.Linear(hidden_dim, 2),
+            nn.Linear(self.hidden_dim, self.in_dim),
         )
 
         self.label_head = None
         if self.num_classes > 0:
             self.label_head = nn.Sequential(
-                nn.Linear(hidden_dim, hidden_dim),
+                nn.Linear(self.hidden_dim, self.hidden_dim),
                 nn.ReLU(inplace=True),
-                nn.Linear(hidden_dim, self.num_classes),
+                nn.Linear(self.hidden_dim, self.num_classes),
             )
 
         self.graph_head = nn.Sequential(
-            nn.Linear(hidden_dim * 2, 128),
+            nn.Linear(self.hidden_dim * 2, 128),
             nn.ReLU(inplace=True),
             nn.Linear(128, 128),
         )
 
+    def _build_encoder(self, input_dim: int) -> nn.Sequential:
+        return nn.Sequential(
+            nn.Linear(input_dim, self.hidden_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(self.hidden_dim, self.hidden_dim),
+        )
+
+    def _split_input(self, x: torch.Tensor) -> Dict[str, Optional[torch.Tensor]]:
+        geo = x[:, : self.geo_dim] if self.geo_dim > 0 else None
+        morph = x[:, self.geo_dim :] if self.morph_dim > 0 else None
+        return {"geo": geo, "morph": morph}
+
     def _fuse_input(self, x: torch.Tensor) -> torch.Tensor:
-        pos = x[:, :6]
-        morph = x[:, 6:8]
+        parts = self._split_input(x)
+        encoded = []
 
-        h_pos = self.pos_encoder(pos)
-        h_morph = self.morph_encoder(morph)
+        if self.geo_encoder is not None:
+            encoded.append(self.geo_encoder(parts["geo"]))
+        if self.morph_encoder is not None:
+            encoded.append(self.morph_encoder(parts["morph"]))
 
+        if not encoded:
+            raise RuntimeError("At least one encoder branch must be enabled.")
+        if len(encoded) == 1:
+            return encoded[0]
         if self.fuse_mode == "sum":
-            return h_pos + h_morph
-        return self.fuse_linear(torch.cat([h_pos, h_morph], dim=-1))
+            return encoded[0] + encoded[1]
+        return self.fuse_linear(torch.cat(encoded, dim=-1))
 
     def forward_hemi(
         self,
@@ -172,13 +201,13 @@ class GraphBranchModel(nn.Module):
         h0 = self._fuse_input(x)
         h_v = self.encoder(h0, edge_index=edge_index, valid_mask=valid_mask)
 
-        morph_pred = self.morph_head(h_v)
+        recon_pred = self.recon_head(h_v)
         label_logits = self.label_head(h_v) if self.label_head is not None else None
         z_hemi = masked_mean(h_v, valid_mask)
 
         out = {
             "H_v": h_v,
-            "morph_pred": morph_pred,
+            "recon_pred": recon_pred,
             "z_hemi": z_hemi,
         }
         if label_logits is not None:

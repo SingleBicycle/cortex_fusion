@@ -1,0 +1,12 @@
+.git
+.gitmodules
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+
+cache/
+runs/
+handoff_to_tian/

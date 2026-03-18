@@ -8,9 +8,11 @@ import struct
 import tempfile
 from typing import Iterable, Optional, Sequence, Tuple
 
+import nibabel as nib
 import numpy as np
 from nibabel.freesurfer.io import read_annot as nib_read_annot
 from nibabel.freesurfer.io import read_geometry as nib_read_geometry
+from nibabel.freesurfer.io import read_label as nib_read_label
 from nibabel.freesurfer.io import read_morph_data as nib_read_morph_data
 
 _MGH_HEADER_BYTES = 284
@@ -28,10 +30,24 @@ def read_surface(path: str) -> Tuple[np.ndarray, np.ndarray]:
 
     Returns:
         verts: (N, 3) float32
-        faces: (F, 3) int64
+        faces: (F, 3) int64. Coordinate-only MGH surfaces return an empty `(0, 3)` array.
     """
-    verts, faces = nib_read_geometry(path)
-    return np.asarray(verts, dtype=np.float32), np.asarray(faces, dtype=np.int64)
+    try:
+        verts, faces = nib_read_geometry(path)
+        return np.asarray(verts, dtype=np.float32), np.asarray(faces, dtype=np.int64)
+    except Exception:  # noqa: BLE001
+        img = nib.load(path)
+        data = np.asarray(img.get_fdata(), dtype=np.float32)
+
+        if data.ndim == 4 and data.shape[1:] == (1, 1, 3):
+            verts = data[:, 0, 0, :]
+        elif data.ndim == 2 and data.shape[1] == 3:
+            verts = data
+        else:
+            raise
+
+        faces = np.zeros((0, 3), dtype=np.int64)
+        return np.asarray(verts, dtype=np.float32), faces
 
 
 def read_annot(path: str, orig_ids: bool = False):
@@ -45,6 +61,12 @@ def read_annot(path: str, orig_ids: bool = False):
         labels, ctab, names
     """
     return nib_read_annot(path, orig_ids=orig_ids)
+
+
+def read_label_vertices(path: str) -> np.ndarray:
+    """Read FreeSurfer `.label` file and return selected vertex indices."""
+    verts = nib_read_label(path, read_scalars=False)
+    return np.asarray(verts, dtype=np.int64).reshape(-1)
 
 
 def _is_gzip_bytes(blob: bytes) -> bool:
@@ -171,5 +193,6 @@ def robust_read_morph(path: str, expected_len: Optional[int] = None) -> np.ndarr
 __all__ = [
     "read_surface",
     "read_annot",
+    "read_label_vertices",
     "robust_read_morph",
 ]

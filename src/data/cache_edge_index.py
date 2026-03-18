@@ -42,8 +42,11 @@ def cache_edge_index(manifest_csv: str, res: str, out_dir: str = "cache/template
         raise RuntimeError(f"no rows with res={res} in manifest: {manifest_csv}")
 
     row = sub.iloc[0]
-    pial_path = str(row["pial_path"])
-    _verts, faces = read_surface(pial_path)
+    topology_path = str(row["topology_path"]) if "topology_path" in row and str(row["topology_path"]) else ""
+    source_path = topology_path or str(row["pial_path"])
+    _verts, faces = read_surface(source_path)
+    if faces.size == 0:
+        raise RuntimeError(f"topology source has no faces: {source_path}")
     edge_index = faces_to_undirected_edge_index(faces)
 
     out_dir = os.path.abspath(out_dir)
@@ -52,7 +55,7 @@ def cache_edge_index(manifest_csv: str, res: str, out_dir: str = "cache/template
     torch.save(edge_index, out_path)
 
     print(f"res={res}")
-    print(f"source_pial={pial_path}")
+    print(f"source_topology={source_path}")
     print(f"edge_index_shape={tuple(edge_index.shape)}")
     print(f"output={out_path}")
     return out_path
