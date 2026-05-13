@@ -2,6 +2,19 @@
 
 Graph-branch SSL pipeline for cortical template-aligned surface graphs. The surface graph construction, ADGCN encoder backbone, dataset manifest flow, and cached template edge index flow are preserved. The main objective is now masked feature reconstruction, and the exported subject embedding is a pooled 128D `z_graph`.
 
+## GraphUNet Release
+
+This repo now includes the GraphUNet surface-branch variant used for the KING over4.5 downstream HE runs.
+
+- Model option: `--backbone_type graph_unet`
+- GraphUNet knobs: `--graph_unet_depth` and `--graph_unet_pool_ratios`
+- Full-suite launcher: `scripts/launch_king4p5_graphunet_full_suite.sh`
+- Snapshot HE evaluator: `scripts/eval_king4p5_snapshot_h2_curve.sh`
+- Included checkpoint: `checkpoints/graphunet_king4p5/ukb6067_graphunet_r060_p080_epoch100_best_recon.pt`
+- Included checkpoint HE evidence: `mean_h2_pca_weighted=0.5037454617584528` on `2119` KING over4.5 subjects
+
+See `docs/graphunet_full_release.md` for the exact training, extraction, and checkpoint provenance.
+
 ## Dependencies
 - `torch`
 - `torch_geometric`
@@ -123,6 +136,36 @@ python src/train/train_graph_branch.py \
   --test_ratio 0.1 \
   --edge_cache_dir cache/templates \
   --out_dir runs/graph_branch_ssl_main5
+```
+
+GraphUNet variant:
+```bash
+python src/train/train_graph_branch.py \
+  --manifest cache/manifest_fsaverage4_ukb6067.csv \
+  --res fsaverage4 \
+  --input_mode main5 \
+  --normalization_mode global_train \
+  --recon_loss wmse \
+  --recon_on all \
+  --lambda_recon 1.0 \
+  --use_ce 0 \
+  --hidden_dim 32 \
+  --dims 32 64 128 256 128 64 32 \
+  --dropout 0.1 \
+  --lr 1e-3 \
+  --weight_decay 1e-4 \
+  --epochs 100 \
+  --edge_cache_dir cache/templates_ukb_fsaverage4 \
+  --backbone_type graph_unet \
+  --graph_unet_depth 2 \
+  --graph_unet_pool_ratios 0.8 0.8 \
+  --pool_mode mean \
+  --mask_strategy hybrid \
+  --mask_ratio 0.60 \
+  --patch_hops 2 \
+  --patch_num_seeds 16 \
+  --hybrid_patch_fraction 0.7 \
+  --out_dir runs/ukb6067_graphunet_mean_globalnorm_hybrid_r060_p080_full100
 ```
 
 4. Extract pooled 128D subject embeddings and PCA outputs:

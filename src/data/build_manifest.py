@@ -27,6 +27,7 @@ CORTEX_LABEL_RE = re.compile(
 )
 THICK_RE = re.compile(r"^(?P<hemi>lh|rh)\.thickness(?:\.[A-Za-z0-9_]+)*\.(?:mgh|mgz)$")
 CURV_RE = re.compile(r"^(?P<hemi>lh|rh)\.curv(?:\.[A-Za-z0-9_]+)*\.(?:mgh|mgz)$")
+SUBJECT_DIR_RE = re.compile(r"^(?:SUBJ_[A-Za-z0-9_]+|\d+(?:_\d+){3,})$")
 
 
 @dataclass(frozen=True)
@@ -75,7 +76,7 @@ def _scan_files(scan_roots: Sequence[str]) -> ScanResult:
     for base in scan_roots:
         for dirpath, _, filenames in os.walk(base, followlinks=False):
             sid = os.path.basename(dirpath)
-            if not sid.startswith("SUBJ_"):
+            if not SUBJECT_DIR_RE.match(sid):
                 continue
 
             for fname in filenames:
@@ -163,8 +164,27 @@ def _pick_morph_path(
     return None
 
 
-def _iter_target_sids(scan: ScanResult, res: str) -> List[str]:
-    sids = sorted({sid for (sid, _hemi, r) in scan.pial.keys() if r == res})
+def _normalize_resolutions(res: str | Sequence[str]) -> List[str]:
+    if isinstance(res, str):
+        values = [res]
+    else:
+        values = [str(x) for x in res]
+    out: List[str] = []
+    seen = set()
+    for value in values:
+        key = str(value).strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(key)
+    if not out:
+        raise ValueError("At least one target resolution is required.")
+    return out
+
+
+def _iter_target_sids(scan: ScanResult, resolutions: Sequence[str]) -> List[str]:
+    res_set = set(_normalize_resolutions(resolutions))
+    sids = sorted({sid for (sid, _hemi, r) in scan.pial.keys() if r in res_set})
     return sids
 
 
@@ -189,15 +209,17 @@ def _scan_template_surfaces(scan_roots: Sequence[str]) -> Dict[Tuple[str, str], 
 def build_manifest(
     root: str,
     out_csv: str,
-    res: str = "fsaverage6",
+    res: str | Sequence[str] = "fsaverage6",
     mode: Optional[str] = None,
     max_subjects: Optional[int] = None,
+    allow_empty_topology: bool = False,
 ) -> pd.DataFrame:
+    resolutions = _normalize_resolutions(res)
     scan_roots = _collect_scan_roots(root=root, mode=mode)
     scan = _scan_files(scan_roots)
     template_surfaces = _scan_template_surfaces(scan_roots)
 
-    target_sids = _iter_target_sids(scan=scan, res=res)
+    target_sids = _iter_target_sids(scan=scan, resolutions=resolutions)
     if max_subjects is not None:
         target_sids = target_sids[: max_subjects]
 
@@ -206,139 +228,144 @@ def build_manifest(
     morph_cache: Dict[str, Optional[np.ndarray]] = {}
 
     for sid in target_sids:
-        for hemi in ("lh", "rh"):
-            key = (sid, hemi, res)
-            pial_paths = scan.pial.get(key, set())
-            if not pial_paths:
-                skipped["missing_pial"] += 1
-                continue
-
-            white_paths = scan.white.get(key, set())
-            if not white_paths:
-                skipped["missing_white"] += 1
-                continue
-
-            annot_paths = scan.annot.get(key, set())
-            cortex_label_paths = scan.cortex_label.get(key, set())
-            if not annot_paths and not cortex_label_paths:
-                skipped["missing_label"] += 1
-                continue
-
-            pial_path = _pick_single_path(pial_paths)
-            white_path = _pick_single_path(white_paths)
-
-            try:
-                pial_verts, pial_faces = read_surface(pial_path)
-            except Exception:  # noqa: BLE001
-                skipped["bad_pial"] += 1
-                continue
-
-            try:
-                white_verts, white_faces = read_surface(white_path)
-            except Exception:  # noqa: BLE001
-                skipped["bad_white"] += 1
-                continue
-
-            n_verts = int(pial_verts.shape[0])
-
-            if int(white_verts.shape[0]) != n_verts:
-                skipped["white_n_mismatch"] += 1
-                continue
-
-            if (
-                pial_faces.size > 0
-                and white_faces.size > 0
-                and (white_faces.shape != pial_faces.shape or not np.array_equal(white_faces, pial_faces))
-            ):
-                skipped["faces_topology_mismatch"] += 1
-                continue
-
-            if pial_faces.size > 0:
-                topology_path = pial_path
-                n_faces = int(pial_faces.shape[0])
-            else:
-                topology_path = template_surfaces.get((hemi, res), None)
-                if topology_path is None:
-                    skipped["missing_topology_template"] += 1
+        for row_res in resolutions:
+            for hemi in ("lh", "rh"):
+                key = (sid, hemi, row_res)
+                pial_paths = scan.pial.get(key, set())
+                if not pial_paths:
+                    skipped[f"{row_res}:missing_pial"] += 1
                     continue
+
+                white_paths = scan.white.get(key, set())
+                if not white_paths:
+                    skipped[f"{row_res}:missing_white"] += 1
+                    continue
+
+                annot_paths = scan.annot.get(key, set())
+                cortex_label_paths = scan.cortex_label.get(key, set())
+                if not annot_paths and not cortex_label_paths:
+                    skipped[f"{row_res}:missing_label"] += 1
+                    continue
+
+                pial_path = _pick_single_path(pial_paths)
+                white_path = _pick_single_path(white_paths)
+
                 try:
-                    topo_verts, topo_faces = read_surface(topology_path)
+                    pial_verts, pial_faces = read_surface(pial_path)
                 except Exception:  # noqa: BLE001
-                    skipped["bad_topology_template"] += 1
+                    skipped[f"{row_res}:bad_pial"] += 1
                     continue
-                if int(topo_verts.shape[0]) != n_verts:
-                    skipped["topology_n_mismatch"] += 1
-                    continue
-                n_faces = int(topo_faces.shape[0])
 
-            if annot_paths:
-                annot_path = _pick_single_path(annot_paths)
-                label_path = annot_path
-                label_format = "annot"
                 try:
-                    annot_labels, _ctab, _names = read_annot(annot_path)
+                    white_verts, white_faces = read_surface(white_path)
                 except Exception:  # noqa: BLE001
-                    skipped["bad_annot"] += 1
+                    skipped[f"{row_res}:bad_white"] += 1
                     continue
 
-                if int(np.asarray(annot_labels).shape[0]) != n_verts:
-                    skipped["annot_n_mismatch"] += 1
-                    continue
-            else:
-                annot_path = ""
-                label_path = _pick_single_path(cortex_label_paths)
-                label_format = "cortex_label"
-                try:
-                    label_vertices = read_label_vertices(label_path)
-                except Exception:  # noqa: BLE001
-                    skipped["bad_cortex_label"] += 1
+                n_verts = int(pial_verts.shape[0])
+
+                if int(white_verts.shape[0]) != n_verts:
+                    skipped[f"{row_res}:white_n_mismatch"] += 1
                     continue
 
-                if label_vertices.size == 0:
-                    skipped["empty_cortex_label"] += 1
+                if (
+                    pial_faces.size > 0
+                    and white_faces.size > 0
+                    and (white_faces.shape != pial_faces.shape or not np.array_equal(white_faces, pial_faces))
+                ):
+                    skipped[f"{row_res}:faces_topology_mismatch"] += 1
                     continue
-                if int(label_vertices.min()) < 0 or int(label_vertices.max()) >= n_verts:
-                    skipped["cortex_label_out_of_bounds"] += 1
+
+                if pial_faces.size > 0:
+                    topology_path = pial_path
+                    n_faces = int(pial_faces.shape[0])
+                else:
+                    topology_path = template_surfaces.get((hemi, row_res), None)
+                    if topology_path is None:
+                        if not allow_empty_topology:
+                            skipped[f"{row_res}:missing_topology_template"] += 1
+                            continue
+                        topology_path = ""
+                        n_faces = 0
+                    else:
+                        try:
+                            topo_verts, topo_faces = read_surface(topology_path)
+                        except Exception:  # noqa: BLE001
+                            skipped[f"{row_res}:bad_topology_template"] += 1
+                            continue
+                        if int(topo_verts.shape[0]) != n_verts:
+                            skipped[f"{row_res}:topology_n_mismatch"] += 1
+                            continue
+                        n_faces = int(topo_faces.shape[0])
+
+                if annot_paths:
+                    annot_path = _pick_single_path(annot_paths)
+                    label_path = annot_path
+                    label_format = "annot"
+                    try:
+                        annot_labels, _ctab, _names = read_annot(annot_path)
+                    except Exception:  # noqa: BLE001
+                        skipped[f"{row_res}:bad_annot"] += 1
+                        continue
+
+                    if int(np.asarray(annot_labels).shape[0]) != n_verts:
+                        skipped[f"{row_res}:annot_n_mismatch"] += 1
+                        continue
+                else:
+                    annot_path = ""
+                    label_path = _pick_single_path(cortex_label_paths)
+                    label_format = "cortex_label"
+                    try:
+                        label_vertices = read_label_vertices(label_path)
+                    except Exception:  # noqa: BLE001
+                        skipped[f"{row_res}:bad_cortex_label"] += 1
+                        continue
+
+                    if label_vertices.size == 0:
+                        skipped[f"{row_res}:empty_cortex_label"] += 1
+                        continue
+                    if int(label_vertices.min()) < 0 or int(label_vertices.max()) >= n_verts:
+                        skipped[f"{row_res}:cortex_label_out_of_bounds"] += 1
+                        continue
+
+                thick_candidates = list(scan.thick.get((sid, hemi), set()))
+                curv_candidates = list(scan.curv.get((sid, hemi), set()))
+
+                thickness_path = _pick_morph_path(
+                    candidates=thick_candidates,
+                    expected_len=n_verts,
+                    morph_cache=morph_cache,
+                )
+                if thickness_path is None:
+                    skipped[f"{row_res}:no_thickness_len_match"] += 1
                     continue
 
-            thick_candidates = list(scan.thick.get((sid, hemi), set()))
-            curv_candidates = list(scan.curv.get((sid, hemi), set()))
+                curv_path = _pick_morph_path(
+                    candidates=curv_candidates,
+                    expected_len=n_verts,
+                    morph_cache=morph_cache,
+                )
+                if curv_path is None:
+                    skipped[f"{row_res}:no_curv_len_match"] += 1
+                    continue
 
-            thickness_path = _pick_morph_path(
-                candidates=thick_candidates,
-                expected_len=n_verts,
-                morph_cache=morph_cache,
-            )
-            if thickness_path is None:
-                skipped["no_thickness_len_match"] += 1
-                continue
-
-            curv_path = _pick_morph_path(
-                candidates=curv_candidates,
-                expected_len=n_verts,
-                morph_cache=morph_cache,
-            )
-            if curv_path is None:
-                skipped["no_curv_len_match"] += 1
-                continue
-
-            rows.append(
-                {
-                    "sid": sid,
-                    "hemi": hemi,
-                    "res": res,
-                    "pial_path": pial_path,
-                    "white_path": white_path,
-                    "annot_path": annot_path,
-                    "label_path": label_path,
-                    "label_format": label_format,
-                    "topology_path": topology_path,
-                    "thickness_path": thickness_path,
-                    "curv_path": curv_path,
-                    "N": n_verts,
-                    "F": n_faces,
-                }
-            )
+                rows.append(
+                    {
+                        "sid": sid,
+                        "hemi": hemi,
+                        "res": row_res,
+                        "pial_path": pial_path,
+                        "white_path": white_path,
+                        "annot_path": annot_path,
+                        "label_path": label_path,
+                        "label_format": label_format,
+                        "topology_path": topology_path,
+                        "thickness_path": thickness_path,
+                        "curv_path": curv_path,
+                        "N": n_verts,
+                        "F": n_faces,
+                    }
+                )
 
     df = pd.DataFrame(rows)
     if not df.empty:
@@ -350,7 +377,7 @@ def build_manifest(
 
     n_subjects = int(df["sid"].nunique()) if not df.empty else 0
     print(f"scan_roots: {scan_roots}")
-    print(f"target_res: {res}")
+    print(f"target_resolutions: {resolutions}")
     print(f"manifest_rows: {len(df)}")
     print(f"subjects_kept: {n_subjects}")
     print(f"output: {out_csv}")
@@ -362,9 +389,11 @@ def build_manifest(
 
     # Quick integrity signal for downstream paired-hemi training.
     if not df.empty:
-        hemi_counts = df.groupby("sid")["hemi"].nunique()
+        hemi_counts = df.groupby(["sid", "res"])["hemi"].nunique()
         n_pairable = int((hemi_counts == 2).sum())
         print(f"subjects_with_both_hemis: {n_pairable}")
+        res_per_subject = df.groupby("sid")["res"].nunique()
+        print(f"subjects_with_multiple_resolutions: {int((res_per_subject > 1).sum())}")
 
     return df
 
@@ -374,6 +403,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--root", type=str, required=True, help="Dataset root directory")
     parser.add_argument("--out", type=str, required=True, help="Output CSV path")
     parser.add_argument("--res", type=str, default="fsaverage6", help="Target resolution")
+    parser.add_argument(
+        "--resolutions",
+        type=str,
+        nargs="+",
+        default=None,
+        help="Optional list of target resolutions, e.g. fsaverage4 fsaverage5 fsaverage6",
+    )
     parser.add_argument(
         "--mode",
         type=str,
@@ -387,17 +423,27 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional cap for quick tests",
     )
+    parser.add_argument(
+        "--allow_empty_topology",
+        action="store_true",
+        help=(
+            "Keep coordinate-only surface rows without a faces template. "
+            "Use only when an external cached edge_index is already available."
+        ),
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
+    target_res = args.resolutions if args.resolutions is not None else args.res
     build_manifest(
         root=args.root,
         out_csv=args.out,
-        res=args.res,
+        res=target_res,
         mode=args.mode,
         max_subjects=args.max_subjects,
+        allow_empty_topology=args.allow_empty_topology,
     )
 
 

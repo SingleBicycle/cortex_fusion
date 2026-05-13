@@ -3,6 +3,14 @@ handoff_to_tian
 cache
 z_graph_cache_newest_fsaverage6_train
 
+# Local experiment outputs and downstream evaluation products.
+ablation_result/
+downstream/
+experiments/
+figures/
+z_graph_cache*/
+z_graph_headcmp*/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

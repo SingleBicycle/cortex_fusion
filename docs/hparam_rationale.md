@@ -5,6 +5,7 @@ This note records why the default SSL configuration for `cortex_fusion` is:
 - `input_mode=main5`
 - `mask_strategy=hybrid`
 - `mask_ratio=0.35`
+- `use_ce=0`
 - `hidden_dim=32`
 - `dims=(32, 64, 128, 256, 128, 64, 32)`
 - reconstruction-first SSL with weighted masked MSE
@@ -24,6 +25,12 @@ Why that maps here:
 - Our downstream goal is a subject embedding, but the available vertex-level signals are geometric and morphometric rather than text-like tokens.
 - Reconstruction is a natural fit because the model can learn local cortical regularities without needing class supervision.
 - The optional CE head stays available for ablations, but reconstruction remains the default optimization target.
+
+Why `use_ce=0` here:
+
+- The newest dataset format used by this repo provides cortex-valid `.label` masks, not parcel `.annot` labels.
+- That means there is no reliable parcel-supervision target to optimize in the default newest-data setting.
+- Keeping `use_ce=0` makes the practical default purely reconstruction-driven and avoids pretending label supervision exists when it does not.
 
 ### 2. Mask ratio
 

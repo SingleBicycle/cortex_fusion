@@ -1,0 +1,47 @@
+{
+  "checkpoint": "ukb6067_graphunet_r060_p080_epoch100_best_recon.pt",
+  "sha256": "d811f42190523cc7e9803608c4f0982e02b9433435d618e74db74867c9d6cb93",
+  "source_run": "ukb6067_graphunet_mean_globalnorm_hybrid_r060_p080_full100",
+  "source_checkpoint": "runs/ukb6067_graphunet_mean_globalnorm_hybrid_r060_p080_full100/snapshots/ckpt_epoch100_best_recon.pt",
+  "stored_epoch": 98,
+  "model_config": {
+    "input_mode": "main5",
+    "in_dim": 5,
+    "geo_dim": 3,
+    "morph_dim": 2,
+    "hidden_dim": 32,
+    "dims": [32, 64, 128, 256, 128, 64, 32],
+    "num_classes": 0,
+    "dropout": 0.1,
+    "fuse_mode": "sum",
+    "backbone_type": "graph_unet",
+    "pool_mode": "mean",
+    "edge_cache_dir": "cache/templates_ukb_fsaverage4",
+    "graph_unet_depth": 2,
+    "graph_unet_pool_ratios": [0.8, 0.8],
+    "graph_global_dim": 0
+  },
+  "training_config": {
+    "normalization_mode": "global_train",
+    "recon_loss": "wmse",
+    "recon_on": "all",
+    "lambda_recon": 1.0,
+    "use_ce": 0,
+    "mask_strategy": "hybrid",
+    "mask_ratio": 0.6,
+    "patch_hops": 2,
+    "patch_num_seeds": 16,
+    "hybrid_patch_fraction": 0.7,
+    "epochs": 100,
+    "seed": 42
+  },
+  "downstream_he": {
+    "run_id": "ukb6067_graphunet_mean_globalnorm_hybrid_r060_p080_full100__epoch100_best_recon",
+    "timestamp_utc": "2026-04-29T19:52:44Z",
+    "kin_label": "over4p5_discovery_anonymous",
+    "n_samples": 2119,
+    "n_phenotype_columns": 128,
+    "metric": "mean_h2_pca_weighted",
+    "value": 0.5037454617584528
+  }
+}

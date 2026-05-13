@@ -36,6 +36,17 @@ FEATURE_SCHEMAS: Dict[str, Dict[str, object]] = {
         "morph_dim": 2,
         "default_recon_weights": [1.0] * 5,
     },
+    "xyz3": {
+        "feature_names": [
+            "mid_x",
+            "mid_y",
+            "mid_z",
+        ],
+        "in_dim": 3,
+        "geo_dim": 3,
+        "morph_dim": 0,
+        "default_recon_weights": [1.0] * 3,
+    },
     "ablation2": {
         "feature_names": [
             "thickness",
